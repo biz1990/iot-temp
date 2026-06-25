@@ -1,298 +1,356 @@
--- IoT-SRS Database Schema for SQL Server
--- Version: 2.0
--- Date: 25/06/2026
+-- IoT-SRS Database Schema for SQL Server 2019+
+-- Execute this script to create all required tables, indexes, and stored procedures
 
--- Create Database
-CREATE DATABASE iot_srs_db;
+USE master;
+GO
+
+-- Create database if not exists
+IF NOT EXISTS (SELECT * FROM sys.databases WHERE name = 'iot_srs_db')
+BEGIN
+    CREATE DATABASE iot_srs_db;
+END
 GO
 
 USE iot_srs_db;
 GO
 
--- Users Table (FR-013, FR-014)
-CREATE TABLE Users (
-    UserID INT IDENTITY(1,1) PRIMARY KEY,
-    Username NVARCHAR(50) NOT NULL UNIQUE,
-    PasswordHash NVARCHAR(255) NOT NULL,
-    Email NVARCHAR(100) NOT NULL UNIQUE,
-    FullName NVARCHAR(100),
-    Role NVARCHAR(20) NOT NULL CHECK (Role IN ('Admin', 'Viewer')),
-    IsActive BIT DEFAULT 1,
-    CreatedAt DATETIME2 DEFAULT GETDATE(),
-    LastLogin DATETIME2,
-    UpdatedAt DATETIME2 DEFAULT GETDATE()
-);
+-- ============================================
+-- USERS TABLE
+-- ============================================
+IF OBJECT_ID('users', 'U') IS NULL
+BEGIN
+    CREATE TABLE users (
+        id INT IDENTITY(1,1) PRIMARY KEY,
+        username NVARCHAR(50) UNIQUE NOT NULL,
+        email NVARCHAR(100) UNIQUE NOT NULL,
+        password_hash NVARCHAR(255) NOT NULL,
+        full_name NVARCHAR(100),
+        role NVARCHAR(20) DEFAULT 'viewer' CHECK (role IN ('admin', 'viewer')),
+        is_active BIT DEFAULT 1,
+        failed_login_attempts INT DEFAULT 0,
+        lockout_until DATETIME NULL,
+        last_login DATETIME NULL,
+        created_at DATETIME DEFAULT GETDATE(),
+        updated_at DATETIME DEFAULT GETDATE()
+    );
+    
+    CREATE INDEX IX_users_username ON users(username);
+    CREATE INDEX IX_users_email ON users(email);
+END
 GO
 
--- Devices Table (FR-001, FR-002)
-CREATE TABLE Devices (
-    DeviceID INT IDENTITY(1,1) PRIMARY KEY,
-    DeviceToken NVARCHAR(64) NOT NULL UNIQUE,
-    DeviceName NVARCHAR(100) NOT NULL,
-    Location NVARCHAR(200),
-    Description NVARCHAR(500),
-    FirmwareVersion NVARCHAR(20),
-    IsOnline BIT DEFAULT 0,
-    LastSeen DATETIME2,
-    CreatedAt DATETIME2 DEFAULT GETDATE(),
-    UpdatedAt DATETIME2 DEFAULT GETDATE()
-);
+-- ============================================
+-- DEVICES TABLE
+-- ============================================
+IF OBJECT_ID('devices', 'U') IS NULL
+BEGIN
+    CREATE TABLE devices (
+        id INT IDENTITY(1,1) PRIMARY KEY,
+        user_id INT NOT NULL FOREIGN KEY REFERENCES users(id) ON DELETE CASCADE,
+        device_token NVARCHAR(64) UNIQUE NOT NULL,
+        device_name NVARCHAR(100) NOT NULL,
+        device_type NVARCHAR(50) DEFAULT 'arduino_r4_wifi',
+        description NVARCHAR(500),
+        location NVARCHAR(200),
+        is_active BIT DEFAULT 1,
+        last_seen DATETIME NULL,
+        firmware_version NVARCHAR(20),
+        created_at DATETIME DEFAULT GETDATE(),
+        updated_at DATETIME DEFAULT GETDATE(),
+        deleted_at DATETIME NULL
+    );
+    
+    CREATE INDEX IX_devices_user_id ON devices(user_id);
+    CREATE INDEX IX_devices_token ON devices(device_token);
+    CREATE INDEX IX_devices_active ON devices(is_active);
+END
 GO
 
--- SensorData Table (FR-003, FR-004, FR-005)
-CREATE TABLE SensorData (
-    DataID BIGINT IDENTITY(1,1) PRIMARY KEY,
-    DeviceID INT NOT NULL FOREIGN KEY REFERENCES Devices(DeviceID),
-    Temperature DECIMAL(5,2),
-    Humidity DECIMAL(5,2),
-    Timestamp DATETIME2 NOT NULL,
-    ReceivedAt DATETIME2 DEFAULT GETDATE(),
-    IsValid BIT DEFAULT 1,
-    INDEX IX_SensorData_Timestamp (Timestamp),
-    INDEX IX_SensorData_Device (DeviceID, Timestamp)
-);
+-- ============================================
+-- SENSOR READINGS TABLE
+-- ============================================
+IF OBJECT_ID('sensor_readings', 'U') IS NULL
+BEGIN
+    CREATE TABLE sensor_readings (
+        id BIGINT IDENTITY(1,1) PRIMARY KEY,
+        device_id INT NOT NULL FOREIGN KEY REFERENCES devices(id),
+        temperature DECIMAL(5,2) NOT NULL,
+        humidity DECIMAL(5,2) NOT NULL,
+        battery_level DECIMAL(5,2) NULL,
+        signal_strength INT NULL,
+        recorded_at DATETIME NOT NULL DEFAULT GETDATE()
+    );
+    
+    CREATE INDEX IX_sensor_readings_device_id ON sensor_readings(device_id);
+    CREATE INDEX IX_sensor_readings_recorded_at ON sensor_readings(recorded_at);
+    CREATE INDEX IX_sensor_readings_device_time ON sensor_readings(device_id, recorded_at);
+END
 GO
 
--- Alerts Table (FR-017, FR-018, FR-019)
-CREATE TABLE AlertThresholds (
-    ThresholdID INT IDENTITY(1,1) PRIMARY KEY,
-    DeviceID INT NOT NULL FOREIGN KEY REFERENCES Devices(DeviceID),
-    MetricType NVARCHAR(20) NOT NULL CHECK (MetricType IN ('Temperature', 'Humidity')),
-    MinValue DECIMAL(5,2),
-    MaxValue DECIMAL(5,2),
-    Hysteresis DECIMAL(5,2) DEFAULT 0.5,
-    IsActive BIT DEFAULT 1,
-    CreatedAt DATETIME2 DEFAULT GETDATE(),
-    UpdatedAt DATETIME2 DEFAULT GETDATE()
-);
+-- ============================================
+-- ALERTS TABLE (Alert Rules)
+-- ============================================
+IF OBJECT_ID('alerts', 'U') IS NULL
+BEGIN
+    CREATE TABLE alerts (
+        id INT IDENTITY(1,1) PRIMARY KEY,
+        device_id INT NOT NULL FOREIGN KEY REFERENCES devices(id) ON DELETE CASCADE,
+        alert_type NVARCHAR(50) NOT NULL CHECK (alert_type IN (
+            'temperature_high', 'temperature_low', 
+            'humidity_high', 'humidity_low'
+        )),
+        threshold_value DECIMAL(5,2) NOT NULL,
+        hysteresis DECIMAL(5,2) DEFAULT 2.0,
+        status NVARCHAR(20) DEFAULT 'active' CHECK (status IN ('active', 'inactive')),
+        last_triggered DATETIME NULL,
+        trigger_count INT DEFAULT 0,
+        created_at DATETIME DEFAULT GETDATE(),
+        updated_at DATETIME DEFAULT GETDATE()
+    );
+    
+    CREATE INDEX IX_alerts_device_id ON alerts(device_id);
+    CREATE INDEX IX_alerts_status ON alerts(status);
+END
 GO
 
--- ActiveAlerts Table
-CREATE TABLE ActiveAlerts (
-    AlertID INT IDENTITY(1,1) PRIMARY KEY,
-    ThresholdID INT NOT NULL FOREIGN KEY REFERENCES AlertThresholds(ThresholdID),
-    DeviceID INT NOT NULL FOREIGN KEY REFERENCES Devices(DeviceID),
-    MetricType NVARCHAR(20) NOT NULL,
-    CurrentValue DECIMAL(5,2) NOT NULL,
-    ThresholdValue DECIMAL(5,2) NOT NULL,
-    AlertType NVARCHAR(10) CHECK (AlertType IN ('HIGH', 'LOW')),
-    TriggeredAt DATETIME2 DEFAULT GETDATE(),
-    Acknowledged BIT DEFAULT 0,
-    AcknowledgedBy INT FOREIGN KEY REFERENCES Users(UserID),
-    AcknowledgedAt DATETIME2,
-    Resolved BIT DEFAULT 0,
-    ResolvedAt DATETIME2,
-    INDEX IX_ActiveAlerts_Device (DeviceID),
-    INDEX IX_ActiveAlerts_Active (Resolved, Acknowledged)
-);
+-- ============================================
+-- ALERT HISTORY TABLE
+-- ============================================
+IF OBJECT_ID('alert_history', 'U') IS NULL
+BEGIN
+    CREATE TABLE alert_history (
+        id BIGINT IDENTITY(1,1) PRIMARY KEY,
+        alert_id INT NOT NULL FOREIGN KEY REFERENCES alerts(id) ON DELETE CASCADE,
+        device_id INT NOT NULL FOREIGN KEY REFERENCES devices(id),
+        triggered_at DATETIME NOT NULL DEFAULT GETDATE(),
+        acknowledged_at DATETIME NULL,
+        acknowledged_by INT NULL FOREIGN KEY REFERENCES users(id),
+        value DECIMAL(5,2) NOT NULL,
+        threshold DECIMAL(5,2) NOT NULL,
+        status NVARCHAR(20) DEFAULT 'active' CHECK (status IN ('active', 'acknowledged', 'resolved'))
+    );
+    
+    CREATE INDEX IX_alert_history_device_id ON alert_history(device_id);
+    CREATE INDEX IX_alert_history_status ON alert_history(status);
+    CREATE INDEX IX_alert_history_triggered_at ON alert_history(triggered_at);
+END
 GO
 
--- AlertHistory Table (Audit Log for Alerts)
-CREATE TABLE AlertHistory (
-    HistoryID BIGINT IDENTITY(1,1) PRIMARY KEY,
-    AlertID INT NOT NULL,
-    DeviceID INT NOT NULL,
-    MetricType NVARCHAR(20) NOT NULL,
-    CurrentValue DECIMAL(5,2) NOT NULL,
-    ThresholdValue DECIMAL(5,2) NOT NULL,
-    AlertType NVARCHAR(10) NOT NULL,
-    TriggeredAt DATETIME2 NOT NULL,
-    AcknowledgedAt DATETIME2,
-    ResolvedAt DATETIME2,
-    DurationSeconds AS DATEDIFF(SECOND, TriggeredAt, ISNULL(ResolvedAt, GETDATE())),
-    INDEX IX_AlertHistory_Triggered (TriggeredAt)
-);
+-- ============================================
+-- OTA FIRMWARE TABLE
+-- ============================================
+IF OBJECT_ID('ota_firmware', 'U') IS NULL
+BEGIN
+    CREATE TABLE ota_firmware (
+        id INT IDENTITY(1,1) PRIMARY KEY,
+        version NVARCHAR(20) UNIQUE NOT NULL,
+        device_type NVARCHAR(50) NOT NULL,
+        file_path NVARCHAR(500) NOT NULL,
+        file_size INT NOT NULL,
+        checksum NVARCHAR(64) NOT NULL,
+        release_notes NVARCHAR(1000),
+        is_current BIT DEFAULT 0,
+        created_at DATETIME DEFAULT GETDATE(),
+        created_by INT FOREIGN KEY REFERENCES users(id)
+    );
+    
+    CREATE INDEX IX_ota_firmware_version ON ota_firmware(version);
+    CREATE INDEX IX_ota_firmware_device_type ON ota_firmware(device_type);
+END
 GO
 
--- AuditLog Table (FR-026)
-CREATE TABLE AuditLog (
-    LogID BIGINT IDENTITY(1,1) PRIMARY KEY,
-    UserID INT FOREIGN KEY REFERENCES Users(UserID),
-    Action NVARCHAR(50) NOT NULL,
-    EntityType NVARCHAR(50),
-    EntityID INT,
-    OldValues NVARCHAR(MAX),
-    NewValues NVARCHAR(MAX),
-    IPAddress NVARCHAR(45),
-    UserAgent NVARCHAR(255),
-    CreatedAt DATETIME2 DEFAULT GETDATE(),
-    INDEX IX_AuditLog_User (UserID),
-    INDEX IX_AuditLog_Action (Action),
-    INDEX IX_AuditLog_Created (CreatedAt)
-);
+-- ============================================
+-- AUDIT LOGS TABLE
+-- ============================================
+IF OBJECT_ID('audit_logs', 'U') IS NULL
+BEGIN
+    CREATE TABLE audit_logs (
+        id BIGINT IDENTITY(1,1) PRIMARY KEY,
+        user_id INT NULL FOREIGN KEY REFERENCES users(id),
+        action NVARCHAR(100) NOT NULL,
+        entity_type NVARCHAR(50),
+        entity_id INT,
+        old_values NVARCHAR(MAX),
+        new_values NVARCHAR(MAX),
+        ip_address NVARCHAR(45),
+        user_agent NVARCHAR(500),
+        created_at DATETIME DEFAULT GETDATE()
+    );
+    
+    CREATE INDEX IX_audit_logs_user_id ON audit_logs(user_id);
+    CREATE INDEX IX_audit_logs_action ON audit_logs(action);
+    CREATE INDEX IX_audit_logs_created_at ON audit_logs(created_at);
+END
 GO
 
--- OTAFirmware Table (FR-020, FR-021)
-CREATE TABLE OTAFirmware (
-    FirmwareID INT IDENTITY(1,1) PRIMARY KEY,
-    Version NVARCHAR(20) NOT NULL UNIQUE,
-    Description NVARCHAR(500),
-    FilePath NVARCHAR(255) NOT NULL,
-    FileSize BIGINT,
-    FileHash NVARCHAR(64),
-    IsLatest BIT DEFAULT 0,
-    UploadedBy INT FOREIGN KEY REFERENCES Users(UserID),
-    UploadedAt DATETIME2 DEFAULT GETDATE(),
-    INDEX IX_OTAFirmware_Latest (IsLatest)
-);
+-- ============================================
+-- CREATE DEFAULT ADMIN USER
+-- ============================================
+-- Password: admin123 (hashed with bcrypt cost 12)
+IF NOT EXISTS (SELECT * FROM users WHERE username = 'admin')
+BEGIN
+    INSERT INTO users (username, email, password_hash, full_name, role, is_active)
+    VALUES (
+        'admin',
+        'admin@iot-srs.local',
+        '$2y$12$LQv3c1yqBWVHxkd0LHAkCOYz6TtxMQJqhN8/X4.G.2IeFjO1Xyeuq',
+        'System Administrator',
+        'admin',
+        1
+    );
+END
 GO
 
--- OTAUpdates Table (Track OTA update history)
-CREATE TABLE OTAUpdates (
-    UpdateID BIGINT IDENTITY(1,1) PRIMARY KEY,
-    DeviceID INT NOT NULL FOREIGN KEY REFERENCES Devices(DeviceID),
-    FirmwareID INT NOT NULL FOREIGN KEY REFERENCES OTAFirmware(FirmwareID),
-    Status NVARCHAR(20) CHECK (Status IN ('Pending', 'Downloading', 'Installing', 'Completed', 'Failed')),
-    ErrorMessage NVARCHAR(500),
-    StartedAt DATETIME2 DEFAULT GETDATE(),
-    CompletedAt DATETIME2,
-    INDEX IX_OTAUpdates_Device (DeviceID),
-    INDEX IX_OTAUpdates_Status (Status)
-);
+-- ============================================
+-- STORED PROCEDURE: Cleanup Old Data
+-- ============================================
+IF OBJECT_ID('sp_cleanup_old_data', 'P') IS NOT NULL
+    DROP PROCEDURE sp_cleanup_old_data;
 GO
 
--- OfflineBuffer Table (FR-006, FR-007)
-CREATE TABLE OfflineBuffer (
-    BufferID BIGINT IDENTITY(1,1) PRIMARY KEY,
-    DeviceToken NVARCHAR(64) NOT NULL,
-    BatchData NVARCHAR(MAX) NOT NULL, -- JSON array of sensor readings
-    ReceivedAt DATETIME2 DEFAULT GETDATE(),
-    Processed BIT DEFAULT 0,
-    ProcessedAt DATETIME2,
-    ErrorMessages NVARCHAR(MAX),
-    INDEX IX_OfflineBuffer_Processed (Processed),
-    INDEX IX_OfflineBuffer_Received (ReceivedAt)
-);
-GO
-
--- DashboardViews Table (Save custom dashboard configurations)
-CREATE TABLE DashboardViews (
-    ViewID INT IDENTITY(1,1) PRIMARY KEY,
-    UserID INT NOT NULL FOREIGN KEY REFERENCES Users(UserID),
-    ViewName NVARCHAR(100) NOT NULL,
-    ViewConfig NVARCHAR(MAX) NOT NULL, -- JSON configuration
-    IsDefault BIT DEFAULT 0,
-    CreatedAt DATETIME2 DEFAULT GETDATE(),
-    UpdatedAt DATETIME2 DEFAULT GETDATE()
-);
-GO
-
--- Create stored procedure for data cleanup (FR-012)
-CREATE PROCEDURE sp_CleanupOldData
+CREATE PROCEDURE sp_cleanup_old_data
+    @retentionDays INT = 730
 AS
 BEGIN
     SET NOCOUNT ON;
     
-    DECLARE @CutoffDate DATETIME2 = DATEADD(YEAR, -2, GETDATE());
+    DECLARE @cutoffDate DATETIME = DATEADD(DAY, -@retentionDays, GETDATE());
+    DECLARE @deletedCount INT;
     
-    -- Delete old sensor data
-    DELETE FROM SensorData 
-    WHERE Timestamp < @CutoffDate;
+    BEGIN TRANSACTION;
     
-    -- Delete old alert history
-    DELETE FROM AlertHistory 
-    WHERE TriggeredAt < @CutoffDate;
-    
-    -- Delete old OTA update records
-    DELETE FROM OTAUpdates 
-    WHERE CompletedAt < @CutoffDate AND CompletedAt IS NOT NULL;
-    
-    -- Delete processed offline buffer entries older than 30 days
-    DELETE FROM OfflineBuffer 
-    WHERE Processed = 1 AND ProcessedAt < DATEADD(DAY, -30, GETDATE());
-    
-    PRINT 'Cleanup completed successfully';
-END;
+    BEGIN TRY
+        -- Delete old sensor readings
+        DELETE FROM sensor_readings 
+        WHERE recorded_at < @cutoffDate;
+        
+        SET @deletedCount = @@ROWCOUNT;
+        
+        -- Delete old alert history (resolved/acknowledged only)
+        DELETE FROM alert_history 
+        WHERE triggered_at < @cutoffDate 
+        AND status IN ('acknowledged', 'resolved');
+        
+        -- Log the cleanup
+        INSERT INTO audit_logs (action, entity_type, old_values, created_at)
+        VALUES (
+            'DATA_CLEANUP',
+            'sensor_readings',
+            CONCAT('Deleted ', @deletedCount, ' records older than ', @cutoffDate),
+            GETDATE()
+        );
+        
+        COMMIT TRANSACTION;
+        
+        SELECT @deletedCount AS deleted_readings;
+    END TRY
+    BEGIN CATCH
+        ROLLBACK TRANSACTION;
+        THROW;
+    END CATCH
+END
 GO
 
--- Create stored procedure for checking alerts
-CREATE PROCEDURE sp_CheckAlerts
-    @DeviceID INT,
-    @Temperature DECIMAL(5,2) = NULL,
-    @Humidity DECIMAL(5,2) = NULL
+-- ============================================
+-- STORED PROCEDURE: Get Dashboard Overview
+-- ============================================
+IF OBJECT_ID('sp_dashboard_overview', 'P') IS NOT NULL
+    DROP PROCEDURE sp_dashboard_overview;
+GO
+
+CREATE PROCEDURE sp_dashboard_overview
+    @userId INT = NULL
 AS
 BEGIN
     SET NOCOUNT ON;
     
-    -- Check temperature alerts
-    IF @Temperature IS NOT NULL
-    BEGIN
-        INSERT INTO ActiveAlerts (ThresholdID, DeviceID, MetricType, CurrentValue, ThresholdValue, AlertType)
-        SELECT 
-            at.ThresholdID,
-            @DeviceID,
-            'Temperature',
-            @Temperature,
-            CASE WHEN @Temperature > at.MaxValue THEN at.MaxValue ELSE at.MinValue END,
-            CASE WHEN @Temperature > at.MaxValue THEN 'HIGH' ELSE 'LOW' END
-        FROM AlertThresholds at
-        WHERE at.DeviceID = @DeviceID 
-            AND at.MetricType = 'Temperature'
-            AND at.IsActive = 1
-            AND ((@Temperature > at.MaxValue + at.Hysteresis) 
-                 OR (@Temperature < at.MinValue - at.Hysteresis))
-            AND NOT EXISTS (
-                SELECT 1 FROM ActiveAlerts aa 
-                WHERE aa.DeviceID = @DeviceID 
-                    AND aa.MetricType = 'Temperature'
-                    AND aa.Resolved = 0
-            );
-    END
+    -- Device statistics
+    SELECT 
+        COUNT(*) AS total_devices,
+        SUM(CASE WHEN is_active = 1 THEN 1 ELSE 0 END) AS active_devices,
+        SUM(CASE WHEN last_seen > DATEADD(MINUTE, -10, GETDATE()) THEN 1 ELSE 0 END) AS online_devices
+    FROM devices
+    WHERE @userId IS NULL OR user_id = @userId;
     
-    -- Check humidity alerts
-    IF @Humidity IS NOT NULL
-    BEGIN
-        INSERT INTO ActiveAlerts (ThresholdID, DeviceID, MetricType, CurrentValue, ThresholdValue, AlertType)
-        SELECT 
-            at.ThresholdID,
-            @DeviceID,
-            'Humidity',
-            @Humidity,
-            CASE WHEN @Humidity > at.MaxValue THEN at.MaxValue ELSE at.MinValue END,
-            CASE WHEN @Humidity > at.MaxValue THEN 'HIGH' ELSE 'LOW' END
-        FROM AlertThresholds at
-        WHERE at.DeviceID = @DeviceID 
-            AND at.MetricType = 'Humidity'
-            AND at.IsActive = 1
-            AND ((@Humidity > at.MaxValue + at.Hysteresis) 
-                 OR (@Humidity < at.MinValue - at.Hysteresis))
-            AND NOT EXISTS (
-                SELECT 1 FROM ActiveAlerts aa 
-                WHERE aa.DeviceID = @DeviceID 
-                    AND aa.MetricType = 'Humidity'
-                    AND aa.Resolved = 0
-            );
-    END
-END;
+    -- Recent alerts
+    SELECT TOP 10
+        ah.id,
+        ah.device_id,
+        d.device_name,
+        a.alert_type,
+        ah.value,
+        ah.threshold,
+        ah.triggered_at,
+        ah.status
+    FROM alert_history ah
+    JOIN alerts a ON ah.alert_id = a.id
+    JOIN devices d ON ah.device_id = d.id
+    WHERE @userId IS NULL OR d.user_id = @userId
+    ORDER BY ah.triggered_at DESC;
+    
+    -- Latest readings summary
+    SELECT 
+        COUNT(DISTINCT r.device_id) AS devices_with_data,
+        AVG(r.temperature) AS avg_temperature,
+        AVG(r.humidity) AS avg_humidity,
+        MAX(r.recorded_at) AS last_reading_time
+    FROM sensor_readings r
+    JOIN devices d ON r.device_id = d.id
+    WHERE r.recorded_at > DATEADD(HOUR, -24, GETDATE())
+    AND (@userId IS NULL OR d.user_id = @userId);
+END
 GO
 
--- Create view for real-time dashboard
-CREATE VIEW vw_DashboardSummary AS
+-- ============================================
+-- VIEW: Device Status Summary
+-- ============================================
+IF OBJECT_ID('vw_device_status', 'V') IS NOT NULL
+    DROP VIEW vw_device_status;
+GO
+
+CREATE VIEW vw_device_status AS
 SELECT 
-    d.DeviceID,
-    d.DeviceName,
-    d.Location,
-    d.IsOnline,
-    d.LastSeen,
-    sd.Temperature,
-    sd.Humidity,
-    sd.Timestamp as LastReading,
-    COUNT(aa.AlertID) as ActiveAlertCount
-FROM Devices d
-LEFT JOIN (
-    SELECT DeviceID, Temperature, Humidity, Timestamp,
-           ROW_NUMBER() OVER (PARTITION BY DeviceID ORDER BY Timestamp DESC) as rn
-    FROM SensorData
-) sd ON d.DeviceID = sd.DeviceID AND sd.rn = 1
-LEFT JOIN ActiveAlerts aa ON d.DeviceID = aa.DeviceID AND aa.Resolved = 0
-GROUP BY d.DeviceID, d.DeviceName, d.Location, d.IsOnline, d.LastSeen, 
-         sd.Temperature, sd.Humidity, sd.Timestamp;
+    d.id,
+    d.device_name,
+    d.device_type,
+    d.location,
+    d.is_active,
+    CASE 
+        WHEN d.last_seen > DATEADD(MINUTE, -10, GETDATE()) THEN 'online'
+        WHEN d.last_seen > DATEADD(HOUR, -24, GETDATE()) THEN 'offline_recent'
+        ELSE 'offline'
+    END AS status,
+    d.last_seen,
+    u.username AS owner_username,
+    (SELECT TOP 1 temperature FROM sensor_readings WHERE device_id = d.id ORDER BY recorded_at DESC) AS last_temperature,
+    (SELECT TOP 1 humidity FROM sensor_readings WHERE device_id = d.id ORDER BY recorded_at DESC) AS last_humidity,
+    (SELECT COUNT(*) FROM alert_history WHERE device_id = d.id AND status = 'active') AS active_alert_count
+FROM devices d
+JOIN users u ON d.user_id = u.id;
 GO
 
--- Insert default admin user (password: admin123)
-INSERT INTO Users (Username, PasswordHash, Email, FullName, Role)
-VALUES ('admin', '$2y$12$LQv3c1yqBWVHxkd0LHAkCOYz6TtxMQJqhN8/X4.G.2fFZqJLqGxW.', 'admin@iot-srs.com', 'System Administrator', 'Admin');
+-- ============================================
+-- VIEW: Alert Summary
+-- ============================================
+IF OBJECT_ID('vw_alert_summary', 'V') IS NOT NULL
+    DROP VIEW vw_alert_summary;
+GO
+
+CREATE VIEW vw_alert_summary AS
+SELECT 
+    d.id AS device_id,
+    d.device_name,
+    COUNT(CASE WHEN ah.status = 'active' THEN 1 END) AS active_alerts,
+    COUNT(CASE WHEN ah.status = 'acknowledged' THEN 1 END) AS acknowledged_alerts,
+    MAX(ah.triggered_at) AS last_alert_time,
+    STRING_AGG(DISTINCT a.alert_type, ', ') AS alert_types
+FROM devices d
+LEFT JOIN alerts al ON d.id = al.device_id
+LEFT JOIN alert_history ah ON al.id = ah.alert_id
+GROUP BY d.id, d.device_name;
 GO
 
 PRINT 'Database schema created successfully!';
+PRINT 'Default admin user: admin / admin123';
+PRINT 'Remember to change the default password after first login!';
 GO
