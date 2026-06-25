@@ -1,0 +1,44 @@
+```php
+# Dependency directories
+vendor/
+composer.lock
+
+# Environment variables
+.env
+.env.local
+.env.*
+
+# Logs
+*.log
+logs/
+
+# Cache
+.cache/
+.opam/
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Build artifacts
+*.o
+*.obj
+*.out
+*.exe
+*.dll
+*.so
+*.a
+
+# PHP specific
+*.php~
+phpunit.xml.dist
+coverage/
+htmlcov/
+.php_cs.cache
+```
